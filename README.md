@@ -23,7 +23,7 @@ The pipeline integrates:
 ## Installation
 
 ```bash
-git clone https://github.com/xxx/MutCD.git
+git clone https://github.com/DaisukeTadokoro/MutCD.git
 cd MutCD
 pip install -r requirements.txt
 ```
