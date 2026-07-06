@@ -1,0 +1,8 @@
+# MutCD: Mutation design guided by CD spectroscopy
+# https://github.com/xxx/MutCD
+
+numpy>=1.24
+scipy>=1.10
+pandas>=1.5
+matplotlib>=3.6
+scikit-learn>=1.0
