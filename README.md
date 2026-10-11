@@ -15,7 +15,7 @@ The key insight is that CD spectroscopy can reveal structural changes (e.g., par
 The pipeline integrates:
 - **BeStSel-inspired analysis** (Micsonai et al., 2015 PNAS) for 8-component secondary structure decomposition
 - **VUVCD-NN method** (Matsuo & Gekko, 2008 Proteins) for residue-level structural mapping
-- **Holley-Karplus neural network** (Holley & Karplus, 1989 PNAS) for sequence-based β-sheet scoring
+- **Holley–Karplus-style neural networks** for sequence-based helix and β-sheet scoring, including SP175-trained zero-hidden and two-hidden-unit variants
 - **SP175 reference dataset** (Lees et al., 2006 Bioinformatics) via DichroWebGit
 
 ---
@@ -37,7 +37,7 @@ Experimental CD spectra (25°C / denaturation temperature)
         ↓
 1. bestsel.py       → 8-component SS analysis (Helix1/2, Anti1/2/3, Parallel, Turn, Others)
         ↓
-2. vuvcd_nn.py      → Residue-level mapping of structural changes
+2. vuvcd_nn.py      → CD-constrained residue-level H/E/O assignment (HK1989 / SP175 / SP175-hidden2)
         ↓
 3. mutation_scan.py → β-sheet stabilizing mutation scan (NNHK Sheet score)
 ```
@@ -65,19 +65,32 @@ python3 mutcd/bestsel.py \
 
 ### Step 2: Residue-level structural mapping
 
+Run from the repository root using Python module invocation:
+
 ```bash
-python3 mutcd/vuvcd_nn.py \
+python -m mutcd.vuvcd_nn \
   --fasta protein.fasta \
-  --helix_frac 0.216 \
-  --sheet_frac 0.318 \
-  --label 25C
+  --helix_frac 0.26 \
+  --sheet_frac 0.27 \
+  --model sp175_hidden2 \
+  --label Native
 ```
 
-Run for both temperatures and compare outputs to identify thermally labile regions.
+Available models:
 
-**Output:**
-- H/E/O assignment for each residue
-- Sequence map
+| `--model` | Architecture | Weights |
+|-----------|--------------|---------|
+| `hk1989` | Original Holley–Karplus-style model; no hidden units | Built-in HK1989 weights |
+| `sp175` | SP175-trained model; no hidden units | `mutcd/models/sp175/` |
+| `sp175_hidden2` | SP175-trained model; two sigmoid hidden units | `mutcd/models/sp175/hidden2/` |
+
+All models score 17-residue sequence windows. The SP175-hidden2 model uses a 357-dimensional one-hot input (17 positions × 21 symbols), two sigmoid hidden units, and two sigmoid outputs for Helix and Sheet.
+
+Run the same sequence with experimentally derived fractions for each condition and compare the H/E/O maps. The CD-derived fractions constrain the total numbers of residues assigned to each structural class; short-segment filtering can cause final counts to differ from the targets.
+
+**Interpretation:** The model does not directly observe unfolding at individual residues. Changes in the predicted map reflect the response of a fixed sequence-based scoring model to different global CD-derived fractions. Residue-level changes are hypotheses requiring independent structural validation.
+
+**Output:** Per-residue H/E/O sequence map and final Helix/Sheet/Other counts.
 
 ---
 
@@ -101,26 +114,48 @@ python3 mutcd/mutation_scan.py \
 
 ## Example: FAST PETase
 
+### CD analysis
+
 ```bash
-# Step 1: CD analysis
-python3 mutcd/bestsel.py \
+python -m mutcd.bestsel \
   --exp examples/fast_petase/EV1_el3taka_agg_25deg_100um.csv \
         examples/fast_petase/EV1_el3taka_agg_80deg_100um.csv \
   --labels 25C 80C \
   --ss_file data/SP175/sp175_8comp_ss_final.txt \
   --out examples/fast_petase/bestsel_result.png
+```
 
-# Step 2: Residue mapping
-python3 mutcd/vuvcd_nn.py \
-  --fasta examples/fast_petase/rcsb_pdb_7SH6.fasta \
-  --helix_frac 0.216 --sheet_frac 0.318 --label 25C
+### Native versus thermally denatured mapping (SP175-hidden2)
 
-python3 mutcd/vuvcd_nn.py \
-  --fasta examples/fast_petase/rcsb_pdb_7SH6.fasta \
-  --helix_frac 0.202 --sheet_frac 0.282 --label 80C
+The following example uses BeStSel-derived Helix and Sheet fractions and a 286-residue FAST-PETase sequence with its C-terminal six-His tag removed. These values describe the two measured conditions; the labels do not imply that the neural network was separately trained on native and denatured structures.
 
-# Step 3: Mutation scan (catalytic site excluded)
-python3 mutcd/mutation_scan.py \
+```bash
+# Native
+python -m mutcd.vuvcd_nn \
+  --fasta examples/fast_petase/rcsb_pdb_7SH6_noHistag.fasta \
+  --helix_frac 0.26 --sheet_frac 0.27 \
+  --model sp175_hidden2 --label Native
+
+# Thermally denatured
+python -m mutcd.vuvcd_nn \
+  --fasta examples/fast_petase/rcsb_pdb_7SH6_noHistag.fasta \
+  --helix_frac 0.195 --sheet_frac 0.233 \
+  --model sp175_hidden2 --label Denatured
+```
+
+Observed assignment counts with this sequence and model:
+
+| Condition | Helix | Sheet | Other |
+|-----------|------:|------:|------:|
+| Native | 59 / 286 (20.6%) | 76 / 286 (26.6%) | 151 / 286 (52.8%) |
+| Denatured | 50 / 286 (17.5%) | 64 / 286 (22.4%) | 172 / 286 (60.1%) |
+
+The model assigns a helical region near residue 240, corresponding approximately to α7 in the referenced PDB structure, and reduces part of that assignment when the CD-derived Helix fraction is lowered. Some C-terminal assignments disagree with the PDB β-strand annotation; removal of the purification His-tag reduces certain terminal helical assignments. This is a preliminary model interpretation, **not direct evidence that α7 unfolds first**. Residue numbering and sequence constructs must be aligned carefully before comparison with PDB/DSSP.
+
+### Mutation scan (example; catalytic-site positions excluded)
+
+```bash
+python -m mutcd.mutation_scan \
   --fasta examples/fast_petase/rcsb_pdb_7SH6.fasta \
   --target_start 142 --target_end 151 \
   --exclude 152 153 154 155 156 \
@@ -137,6 +172,27 @@ python3 mutcd/mutation_scan.py \
 | R147T | +0.082 | -0.018 | +0.099 | +0.000 | -0.79 kcal/mol |
 
 **K142T and D144T are prioritized as top candidates** (consistent across all three methods).
+
+---
+
+## Trained SP175 model weights
+
+The repository stores the SP175-trained `.npy` arrays under `mutcd/models/sp175/`:
+
+```text
+mutcd/models/sp175/
+  W_HELIX_SP175.npy
+  W_SHEET_SP175.npy
+  BIAS_HELIX_SP175.npy
+  BIAS_SHEET_SP175.npy
+  hidden2/
+    W1_hidden2_SP175.npy
+    b1_hidden2_SP175.npy
+    W2_hidden2_SP175.npy
+    b2_hidden2_SP175.npy
+```
+
+The zero-hidden model scores each 17-residue window with separate additive Helix/Sheet logits. The hidden2 model first transforms the one-hot window through two sigmoid hidden units, then computes the two output scores. The models are not interchangeable with respect to their learned score rankings.
 
 ---
 
@@ -185,12 +241,15 @@ Reimplemented from Micsonai et al. (2015) PNAS 112:E3095.
 - Non-negative least squares (NNLS) fitting
 
 ### VUVCD-NN mapping (vuvcd_nn.py)
-Based on Matsuo & Gekko (2008) Proteins 72:104.
-- Holley-Karplus (1989) neural network weights for residue scoring
-- CD-derived residue counts constrain the assignment
+Inspired by Matsuo & Gekko (2008) *Proteins* 72:104.
+- Selectable `hk1989`, `sp175`, and `sp175_hidden2` sequence-scoring models.
+- SP175-trained models use DSSP-derived sequence/secondary-structure labels; the neural-network training targets are not CD spectra.
+- The two-hidden-unit model uses a 357 → 2 → 2 sigmoid architecture.
+- CD-derived Helix and Sheet fractions constrain residue assignments; minimum segment lengths are enforced afterward.
+- The hidden-unit activations and model-assigned changes should not be interpreted as direct measurements of local unfolding or as validated per-residue stability probabilities.
 
 ### Mutation scan (mutation_scan.py)
-Novel application of Holley-Karplus (1989) PNAS 86:152 weights.
+Sequence-based mutation ranking using neural-network Helix and Sheet scores.
 - Sheet score maximization across target region
 - Score = ΔSheet − ΔHelix
 
