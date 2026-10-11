@@ -13,6 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from nnhk_weights import W_HELIX, W_SHEET, BIAS_HELIX, BIAS_SHEET, AA_ORDER
+from pathlib import Path
 
 AA_IDX = {aa: i for i, aa in enumerate(AA_ORDER)}
 
@@ -25,10 +26,27 @@ def load_fasta(filepath):
         for line in f:
             if not line.startswith('>'):
                 seq += line.strip()
-    return seq.rstrip("H")
+    return seq.upper()
 
-def nn_score_all(seq, window=17):
+def nn_score_all(seq, window=17, weights=None):
     """Calculate NNHK helix/sheet scores for all residues"""
+    if isinstance(weights, dict) and weights.get('kind') == 'hidden2':
+        W1, b1, W2, b2 = (weights[k] for k in ('W1', 'b1', 'W2', 'b2'))
+        if window != 17:
+            raise ValueError('hidden2 model requires a 17-residue window')
+        n = len(seq)
+        X = np.zeros((n, 357), dtype=float)
+        for pos in range(n):
+            for col, offset in enumerate(range(-8, 9)):
+                i = pos + offset
+                aa = seq[i] if 0 <= i < n else '-'
+                if aa not in AA_IDX:
+                    raise ValueError(f'Unknown amino acid {aa!r} at position {i + 1}')
+                X[pos, col * 21 + AA_IDX[aa]] = 1.0
+        hidden = sigmoid(X @ W1 + b1)
+        outputs = sigmoid(hidden @ W2 + b2)
+        return outputs[:, 0], outputs[:, 1]
+    wh, ws, bh, bs = weights if weights is not None else (W_HELIX, W_SHEET, BIAS_HELIX, BIAS_SHEET)
     half = window // 2
     n = len(seq)
     helix_out = np.zeros(n)
@@ -39,11 +57,40 @@ def nn_score_all(seq, window=17):
             col = offset + half
             i = pos + offset
             idx = AA_IDX.get(seq[i] if 0 <= i < n else '-', AA_IDX['-'])
-            xh += W_HELIX[idx, col]
-            xs += W_SHEET[idx, col]
-        helix_out[pos] = sigmoid(xh + BIAS_HELIX)
-        sheet_out[pos] = sigmoid(xs + BIAS_SHEET)
+            xh += wh[idx, col]
+            xs += ws[idx, col]
+        helix_out[pos] = sigmoid(xh + bh)
+        sheet_out[pos] = sigmoid(xs + bs)
     return helix_out, sheet_out
+
+def load_model(name):
+    if name == 'sp175_hidden2':
+        root = Path(__file__).resolve().parent / 'models' / 'sp175' / 'hidden2'
+        arrays = {
+            key: np.load(root / filename, allow_pickle=False)
+            for key, filename in {
+                'W1': 'W1_hidden2_SP175.npy',
+                'b1': 'b1_hidden2_SP175.npy',
+                'W2': 'W2_hidden2_SP175.npy',
+                'b2': 'b2_hidden2_SP175.npy',
+            }.items()
+        }
+        expected = {'W1': (357, 2), 'b1': (2,), 'W2': (2, 2), 'b2': (2,)}
+        for key, shape in expected.items():
+            if arrays[key].shape != shape:
+                raise ValueError(f'{key} must have shape {shape}, got {arrays[key].shape}')
+        return {'kind': 'hidden2', **arrays}
+    if name == 'hk1989':
+        return W_HELIX, W_SHEET, BIAS_HELIX, BIAS_SHEET
+    root = Path(__file__).resolve().parent / 'models' / 'sp175'
+    wh = np.load(root / 'W_HELIX_SP175.npy', allow_pickle=False)
+    ws = np.load(root / 'W_SHEET_SP175.npy', allow_pickle=False)
+    bh = float(np.load(root / 'BIAS_HELIX_SP175.npy', allow_pickle=False))
+    bs = float(np.load(root / 'BIAS_SHEET_SP175.npy', allow_pickle=False))
+    if wh.shape != (21, 17) or ws.shape != (21, 17):
+        raise ValueError('SP175 weights must have shape (21, 17)')
+    return wh, ws, bh, bs
+
 
 def filter_min_segment(state, label, min_len):
     state = state.copy()
@@ -114,6 +161,7 @@ def main():
                         help='Sample label (e.g. 25C)')
     parser.add_argument('--width', type=int, default=60,
                         help='Line width for sequence map display')
+    parser.add_argument('--model', choices=['hk1989', 'sp175', 'sp175_hidden2'], default='hk1989')
     args = parser.parse_args()
 
     seq = load_fasta(args.fasta)
@@ -124,7 +172,7 @@ def main():
     n_strand = int(round(args.sheet_frac  * n))
     print(f'Target: Helix={n_helix} residues, Strand={n_strand} residues')
 
-    helix_out, sheet_out = nn_score_all(seq)
+    helix_out, sheet_out = nn_score_all(seq, weights=load_model(args.model))
     state = assign_vuvcd_nn(seq, helix_out, sheet_out, n_helix, n_strand)
     print_map(seq, state, label=args.label, width=args.width)
 

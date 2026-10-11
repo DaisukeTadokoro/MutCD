@@ -134,9 +134,12 @@ def main():
               f'ΔHelix={r["delta_helix"]:+.4f}, Score={r["score"]:+.4f}')
 
     if args.out:
-        import pandas as pd
-        pd.DataFrame(results).to_csv(args.out, index=False)
-        print(f'\n結果を保存: {args.out}')
+    import csv
+    with open(args.out, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=results[0].keys())
+        writer.writeheader()
+        writer.writerows(results)
+    print(f"\n結果を保存: {args.out}")
 
 if __name__ == '__main__':
     main()
